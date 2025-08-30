@@ -1,0 +1,358 @@
+---
+- name: Setup WordPress on RHEL 9 with secure services
+  hosts: localhost
+  become: true
+
+  vars_prompt:
+    - name: mysql_root_password
+      prompt: "Enter MySQL root password"
+      private: yes
+
+  vars_files:
+    - group_vars/secrets.yml
+
+  tasks:
+    - name: Install required packages
+      dnf:
+        name:
+          - php
+          - php-fpm
+          - php-mysqlnd
+          - php-gd
+          - php-mbstring
+          - php-xml
+          - php-json
+          - php-zip
+          - mariadb-server
+          - nginx
+          - firewalld
+          - python3-pip
+        state: present
+        update_cache: yes
+
+    - name: Enable and start services
+      systemd:
+        name: "{{ item }}"
+        enabled: true
+        state: started
+      loop:
+        - nginx
+        - php-fpm
+        - mariadb
+        - firewalld
+
+
+    - name: Open firewall ports
+      firewalld:
+        service: "{{ item }}"
+        permanent: yes
+        state: enabled
+        immediate: yes
+      loop:
+        - http
+        - https
+        - ssh
+
+    - name: Create user 'nihad'
+      user:
+        name: nihad
+        password: "{{ 'nihad' | password_hash('sha512') }}"
+        shell: /bin/bash
+        state: present
+        create_home: yes
+
+
+    - name: Set correct permissions for chroot jail
+      file:
+        path: /home/nihad
+        owner: root
+        group: root
+        mode: '0755'
+
+
+    - name: Create SFTP upload directory for nihad
+      file:
+        path: /home/nihad/uploads
+        state: directory
+        owner: nihad
+        group: nihad
+        mode: '0755'
+
+
+    - name: Ensure SFTP configuration exists for nihad
+      blockinfile:
+        path: /etc/ssh/sshd_config
+        marker: "# {mark} ANSIBLE MANAGED BLOCK FOR NIHAD"
+        block: |
+          Match User nihad
+              ChrootDirectory /home/nihad
+              ForceCommand internal-sftp
+              PasswordAuthentication yes
+              AllowTcpForwarding no
+              X11Forwarding no
+
+
+    - name: Set SELinux context for chroot jail
+      command: chcon -R -t ssh_home_t /home/nihad
+      ignore_errors: yes
+
+
+    - name: Restart sshd to apply SFTP config
+      systemd:
+        name: sshd
+        state: restarted
+
+    - name: Create web directory
+      file:
+        path: /home/nihad/mywebsite/public
+        state: directory
+        owner: nihad
+        group: nihad
+        mode: '0755'
+        recurse: yes
+
+
+
+    - name: Allow SELinux HTTP access to user's home and web directory
+      command: semanage fcontext -a -t httpd_sys_content_t "/home/nihad(/.*)?"
+      ignore_errors: yes  # Avoid playbook failing if already exists or semanage missing
+
+    - name: Apply SELinux context recursively to web root
+      command: restorecon -Rv /home/nihad
+
+    - name: Allow nginx to access user's home
+      file:
+        path: /home/nihad
+        mode: '0755'
+
+    - name: Set SELinux context on web root
+      command: restorecon -Rv /home/nihad
+
+    - name: Download WordPress archive only if not present
+      get_url:
+        url: https://wordpress.org/latest.tar.gz
+        dest: /tmp/wordpress-latest.tar.gz
+        mode: '0644'
+        force: no
+
+    - name: Extract WordPress only if not already extracted
+      unarchive:
+        src: /tmp/wordpress-latest.tar.gz
+        dest: /tmp/
+        remote_src: yes
+        creates: /tmp/wordpress/wp-config-sample.php
+
+    - name: Copy WordPress files to web root
+      shell: |
+       cp -r /tmp/wordpress/* /home/nihad/mywebsite/public/
+       chown -R nginx:nginx /home/nihad/mywebsite/public/
+       chmod -R 755 /home/nihad/mywebsite/public/
+       chcon -Rt httpd_sys_content_t /home/nihad/mywebsite/public/
+      args:
+       creates: /home/nihad/mywebsite/public/index.php
+
+    - name: Create wp-config.php from sample
+      copy:
+       src: /home/nihad/mywebsite/public/wp-config-sample.php
+       dest: /home/nihad/mywebsite/public/wp-config.php
+       remote_src: yes
+
+    - name: Set database credentials in wp-config.php
+      replace:
+       path: /home/nihad/mywebsite/public/wp-config.php
+       regexp: "{{ item.regexp }}"
+       replace: "{{ item.replace }}"
+      loop:
+       - { regexp: "define\\(\\s*'DB_NAME',\\s*'.*?'\\s*\\);", replace: "define('DB_NAME', '{{ wp_db_name }}');" }
+       - { regexp: "define\\(\\s*'DB_USER',\\s*'.*?'\\s*\\);", replace: "define('DB_USER', '{{ wp_db_user }}');" }
+       - { regexp: "define\\(\\s*'DB_PASSWORD',\\s*'.*?'\\s*\\);", replace: "define('DB_PASSWORD', '{{ wp_db_password }}');" }
+       - { regexp: "define\\(\\s*'DB_HOST',\\s*'.*?'\\s*\\);", replace: "define('DB_HOST', 'localhost');" }
+
+
+
+    - name: Configure nginx for WordPress (HTTP)
+      copy:
+        dest: /etc/nginx/conf.d/wordpress.conf
+        content: |
+          server {
+              listen 80;
+              server_name {{ domain }} www.{{ domain }};
+              root /home/nihad/mywebsite/public;
+              index index.php index.html;
+              location / {
+                  try_files $uri $uri/ /index.php?$args;
+              }
+              location ~ \.php$ {
+                  include /etc/nginx/fastcgi_params;
+                  fastcgi_pass unix:/run/php-fpm/www.sock;
+                  fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+              }
+              location ~ /\.ht {
+                  deny all;
+              }
+          }
+
+    - name: Reload nginx
+      systemd:
+        name: nginx
+        state: reloaded
+
+    - name: Install PyMySQL for MySQL support
+      pip:
+        name: PyMySQL
+        executable: pip3
+
+    - name: Allow root password login for MariaDB
+      shell: |
+       mysql -u root -p{{ mysql_root_password }} -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '{{ mysql_root_password }}'; FLUSH PRIVILEGES;"
+      args:
+       executable: /bin/bash
+
+
+
+
+    - name: Create WordPress DB
+      community.mysql.mysql_db:
+        name: "{{ wp_db_name }}"
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+
+    - name: Create WordPress DB user
+      community.mysql.mysql_user:
+        name: "{{ wp_db_user }}"
+        password: "{{ wp_db_password }}"
+        priv: "{{ wp_db_name }}.*:ALL"
+        state: present
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+
+    - name: Remove any existing phpMyAdmin directory
+      file:
+        path: /usr/share/phpmyadmin
+        state: absent
+
+    - name: Install phpMyAdmin
+      get_url:
+        url: https://www.phpmyadmin.net/downloads/phpMyAdmin-latest-all-languages.tar.gz
+        dest: /usr/share/phpMyAdmin.tar.gz
+
+    - name: Create phpMyAdmin target directory
+      file:
+        path: /usr/share/phpmyadmin
+        state: directory
+        mode: '0755'
+
+    - name: Extract phpMyAdmin into correct directory
+      unarchive:
+        src: /usr/share/phpMyAdmin.tar.gz
+        dest: /usr/share/phpmyadmin
+        remote_src: yes
+        extra_opts: [--strip-components=1]
+
+    - name: Create phpMyAdmin symlink to web dir
+      file:
+        src: /usr/share/phpmyadmin
+        dest: "{{ phpmyadmin_symlink }}"
+        state: link
+
+    - name: Ensure PHP session directory exists with proper ownership and permissions
+      file:
+       path: /var/lib/php/session
+       state: directory
+       owner: nginx
+       group: nginx
+       mode: '0733'
+       recurse: yes
+
+    - name: Allow SELinux access to PHP session directory
+      command: semanage fcontext -m -t httpd_sys_rw_content_t "/var/lib/php/session(/.*)?"
+      ignore_errors: yes
+
+    - name: Apply SELinux context on PHP session directory
+      command: restorecon -Rv /var/lib/php/session
+
+    - name: Restart PHP-FPM
+      systemd:
+       name: php-fpm
+       state: restarted
+
+    - name: Restart nginx
+      systemd:
+       name: nginx
+       state: restarted
+
+
+
+    - name: Install Certbot and nginx plugin using pip
+      pip:
+        name:
+          - certbot
+          - certbot-nginx
+        executable: pip3
+
+    - name: Reload nginx before SSL
+      systemd:
+        name: nginx
+        state: reloaded
+
+    - name: Obtain SSL Certificate using webroot
+      command: >
+        /usr/local/bin/certbot certonly --webroot -w /home/nihad/mywebsite/public
+        -d {{ domain }} -m nihadnazar16@gmail.com
+        --agree-tos --no-eff-email --noninteractive --quiet
+      args:
+        creates: /etc/letsencrypt/live/{{ domain }}
+
+    - name: Configure nginx for SSL
+      copy:
+        dest: /etc/nginx/conf.d/wordpress.conf
+        content: |
+          server {
+              listen 80;
+              server_name {{ domain }} www.{{ domain }};
+              return 301 https://$host$request_uri;
+          }
+
+          server {
+              listen 443 ssl;
+              server_name {{ domain }} www.{{ domain }};
+
+              ssl_certificate /etc/letsencrypt/live/{{ domain }}/fullchain.pem;
+              ssl_certificate_key /etc/letsencrypt/live/{{ domain }}/privkey.pem;
+
+              root /home/nihad/mywebsite/public;
+              index index.php index.html;
+
+              location / {
+                  try_files $uri $uri/ /index.php?$args;
+              }
+
+              location ~ \.php$ {
+                  include /etc/nginx/fastcgi_params;
+                  fastcgi_pass unix:/run/php-fpm/www.sock;
+                  fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+              }
+
+              location ~ /\.ht {
+                  deny all;
+              }
+          }
+
+    - name: Reload nginx after SSL setup
+      systemd:
+        name: nginx
+        state: reloaded
+
+    - name: Ensure uploads directory exists for SFTP demo
+      file:
+       path: /home/nihad/uploads
+       state: directory
+       owner: nihad
+       group: nihad
+       mode: '0755'
+
+
+
+  handlers:
+    - name: Restore SELinux
+      command: restorecon -Rv /home/nihad/mywebsite/public
