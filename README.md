@@ -17,4 +17,5 @@ This project automates deploying a **WordPress** website on **RHEL 9** with **Ng
 ## 🛠️ Usage
 
 ```bash
-ansible-playbook ansible/playbook.yml -i ansible/inventory.ini
+ansible-playbook ansible/playbook.yml
+
