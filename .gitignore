@@ -5,6 +5,9 @@ ansible/group_vars/secrets.yml
 ansible/roles/*/defaults/*
 ansible/roles/*/vars/*
 
+# Inventory if it contains sensitive info
+ansible/inventory.ini
+
 # ==========================
 # WordPress Config & Uploads
 # ==========================
