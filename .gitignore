@@ -1,0 +1,46 @@
+# ==========================
+# Ansible Secrets
+# ==========================
+ansible/group_vars/secrets.yml
+ansible/roles/*/defaults/*
+ansible/roles/*/vars/*
+
+# ==========================
+# WordPress Config & Uploads
+# ==========================
+/home/nihad/mywebsite/public/wp-config.php
+/home/nihad/mywebsite/public/wp-content/uploads/
+wp-content/debug.log
+
+# ==========================
+# PhpMyAdmin
+# ==========================
+/home/nihad/mywebsite/public/phpmyadmin
+/usr/share/phpmyadmin
+/usr/share/phpMyAdmin.tar.gz
+
+# ==========================
+# SSL Certificates
+# ==========================
+/etc/letsencrypt/
+/*.pem
+/*.crt
+/*.key
+
+# ==========================
+# Logs & Cache
+# ==========================
+*.log
+*.tmp
+*.cache
+*.bak
+*.swp
+__pycache__/
+
+# ==========================
+# System & Editor Files
+# ==========================
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
