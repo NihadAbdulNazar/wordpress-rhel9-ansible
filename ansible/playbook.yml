@@ -151,22 +151,13 @@
       args:
        creates: /home/nihad/mywebsite/public/index.php
 
-    - name: Create wp-config.php from sample
-      copy:
-       src: /home/nihad/mywebsite/public/wp-config-sample.php
+    - name: Configure wp-config.php using template
+      template:
+       src: templates/wp-config.php.j2
        dest: /home/nihad/mywebsite/public/wp-config.php
-       remote_src: yes
-
-    - name: Set database credentials in wp-config.php
-      replace:
-       path: /home/nihad/mywebsite/public/wp-config.php
-       regexp: "{{ item.regexp }}"
-       replace: "{{ item.replace }}"
-      loop:
-       - { regexp: "define\\(\\s*'DB_NAME',\\s*'.*?'\\s*\\);", replace: "define('DB_NAME', '{{ wp_db_name }}');" }
-       - { regexp: "define\\(\\s*'DB_USER',\\s*'.*?'\\s*\\);", replace: "define('DB_USER', '{{ wp_db_user }}');" }
-       - { regexp: "define\\(\\s*'DB_PASSWORD',\\s*'.*?'\\s*\\);", replace: "define('DB_PASSWORD', '{{ wp_db_password }}');" }
-       - { regexp: "define\\(\\s*'DB_HOST',\\s*'.*?'\\s*\\);", replace: "define('DB_HOST', 'localhost');" }
+       owner: nginx
+       group: nginx
+       mode: 0644
 
 
 
